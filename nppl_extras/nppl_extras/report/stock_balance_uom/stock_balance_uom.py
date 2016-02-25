@@ -12,19 +12,19 @@ def execute(filters=None):
 	item_map = get_item_details(filters)
 	iwb_map = get_item_warehouse_map(filters)
 	data = []
-	bal_nos, bal_set, bal_bag = 0,0,0
+	bal_kg, bal_packets, bal_bags = "","",""
 	for (company, item, warehouse) in sorted(iwb_map):
 		qty_dict = iwb_map[(company, item, warehouse)]
 
 		# Calculate UOM Table for NPPL
-		bal_nos = qty_dict.bal_qty if item_map[item]["stock_uom"] == "Nos" \
-			else convert_to_uom(qty_dict.bal_qty, item_map[item]["stock_uom"], "Nos")
+		bal_kg = qty_dict.bal_qty if item_map[item]["stock_uom"] == "Kg" \
+			else convert_to_uom(item, qty_dict.bal_qty, item_map[item]["stock_uom"], "Kg")
 
-		bal_set = qty_dict.bal_qty if item_map[item]["stock_uom"] == "Set" \
-			else convert_to_uom(qty_dict.bal_qty, item_map[item]["stock_uom"], "Set")
+		bal_packets = qty_dict.bal_qty if item_map[item]["stock_uom"] == "Packets" \
+			else convert_to_uom(item, qty_dict.bal_qty, item_map[item]["stock_uom"], "Packets")
 
-		bal_bag = qty_dict.bal_qty if item_map[item]["stock_uom"] == "Bag" \
-			else convert_to_uom(qty_dict.bal_qty, item_map[item]["stock_uom"], "Bag")
+		bal_bags = qty_dict.bal_qty if item_map[item]["stock_uom"] == "Bags" \
+			else convert_to_uom(item, qty_dict.bal_qty, item_map[item]["stock_uom"], "Bags")
 
 		data.append([item, item_map[item]["item_name"],
 			item_map[item]["item_group"],
@@ -34,7 +34,7 @@ def execute(filters=None):
 			qty_dict.opening_val, qty_dict.in_qty,
 			qty_dict.in_val, qty_dict.out_qty,
 			qty_dict.out_val, qty_dict.bal_qty,
-			bal_nos, bal_set, bal_bag,
+			bal_kg, bal_packets, bal_bags,
 			qty_dict.bal_val, qty_dict.val_rate,
 			company
 		])
@@ -59,9 +59,9 @@ def get_columns(filters):
 		_("Out Qty")+":Float:80",
 		_("Out Value")+":Float:80",
 		_("Balance Qty")+":Float:100",
-		_("Bal Nos")+":Float:100",
-		_("Bal Set")+":Float:100",
-		_("Bal Bag")+":Float:100",
+		_("Kg")+"::100",
+		_("Packets")+"::100",
+		_("Bags")+"::100",
 		_("Balance Value")+":Float:100",
 		_("Valuation Rate")+":Float:90",
 		_("Company")+":Link/Company:100"
@@ -146,28 +146,53 @@ def get_item_details(filters):
 
 	return item_map
 
-def convert_to_uom(qty, from_uom, to_uom):
-	out = 0
-	nos_in_set = frappe.db.get_single_value("NPPL UOM Settings", "nppl_nos_in_set") # 1000
-	set_in_bag = frappe.db.get_single_value("NPPL UOM Settings", "nppl_set_in_bag") # 20
-	if not nos_in_set or not set_in_bag:
-		frappe.throw("Set UOM in NPPL Settings")
-	if from_uom == "Nos":
-		if to_uom == "Set":
-			out = qty / int(nos_in_set)
-		elif to_uom == "Bag":
-			out = (qty / int(nos_in_set)) / int(set_in_bag)
+def convert_to_uom(item, qty, from_uom, to_uom):
+	out = " "
+	con_rate = get_conversion_rate(item)
+	if from_uom == "Kg":
+		if to_uom == "Packets":
+			out = qty * con_rate.get("to_packets")
+		elif to_uom == "Bags":
+			out = qty * con_rate.get("to_bags")
 
-	if from_uom == "Set":
-		if to_uom == "Nos":
-			out = qty * int(nos_in_set)
-		elif to_uom == "Bag":
-			out = qty / int(set_in_bag)
+	if from_uom == "Packets":
+		if to_uom == "Kg":
+			out = qty * con_rate.get("to_kg")
+		elif to_uom == "Bags":
+			out = qty * con_rate.get("to_bags")
 
-	if from_uom == "Bag":
-		if to_uom == "Set":
-			out = qty * int(set_in_bag)
-		elif to_uom == "Nos":
-			out = qty * int(set_in_bag) * int(nos_in_set)
+	if from_uom == "Bags":
+		if to_uom == "Kg":
+			out = qty * con_rate.get("to_kg")
+		elif to_uom == "Packets":
+			out = qty * con_rate.get("to_packets")
+	return out
+
+def get_conversion_rate(item):
+	to_kg, to_packets, to_bags = 0,0,0
+	bom_name = frappe.db.get_value("BOM", {"item":item, "is_default":1}, "name")
+	quantity = flt(frappe.db.get_value("BOM", {"item":item, "is_default":1}, "quantity"))
+	qty = flt(frappe.db.get_value("BOM Item", {"parent":bom_name,"idx":1}, "qty"))
+	if frappe.get_value("Item", {"name":item}, "stock_uom") == "Kg":
+		to_kg = 1
+		if quantity and qty:
+			to_packets = qty / quantity
+			to_bags = qty * quantity # if any error use that
+	elif frappe.get_value("Item", {"name":item}, "stock_uom") == "Packets":
+		to_packets = 1
+		if quantity and qty:
+			to_kg = qty / quantity
+			to_bags = flt(1 / (quantity * qty),4)
+	elif frappe.get_value("Item", {"name":item}, "stock_uom") == "Bags":
+		to_bags = 1
+		if quantity and qty:
+			to_packets = qty / quantity
+			to_kg = quantity / qty # use this
+
+	out = {
+		"to_kg": to_kg,
+		"to_packets": to_packets,
+		"to_bags": to_bags
+	}
 
 	return out
